@@ -1,0 +1,83 @@
+--for testing
+drop table if exists List;
+drop table if exists Item;
+drop table if exists Recurrence;
+
+
+--table defs
+create table if not exists List(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT UNIQUE NOT NULL,
+  check_boxes BOOLEAN NOT NULL DEFAULT(FALSE)
+);
+create table if not exists Item(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  complete BOOLEAN NOT NULL DEFAULT(FALSE),
+  text TEXT NOT NULL,
+  list_id INTEGER NOT NULL,
+  FOREIGN KEY(list_id) REFERENCES List(list_id)
+);
+create table if not exists Recurrence(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  period INTEGER NOT NULL,  --seconds?
+  time_last DATETIME NOT NULL,
+  item_id INTEGER UNIQUE NOT NULL,
+  FOREIGN KEY(item_id) REFERENCES Item(item_id)
+);
+
+
+--get list info
+select * from List;
+
+--create list
+insert into List(name, check_boxes) values('name', FALSE);
+
+--update list name
+update List set name = 'new name' where id = 1;
+
+--update list check_boxes
+update List set check_boxes = TRUE where id = 1;
+
+--delete list
+delete from List where(name like 'name');
+
+
+--get item info
+select id, complete, text from Item where list_id = 1;
+
+--create item
+insert into Item(text, list_id) values('item text', 1);
+
+--update item text
+update Item set text = 'new item text' where id = 1;
+
+--update item complete
+update Item set complete = TRUE where id = 1;
+
+--delete item
+delete from Item where(id like 1);
+
+
+--get recurrence info (just selecting all of them to update complete status when running checks)
+select * from Recurrence;
+
+--create recurrence
+insert into Recurrence(period, time_last, item_id) values(604800, unixepoch('2026-01-15 12:00'), 1);
+
+--for transaction testing
+update Recurrence set time_last = unixepoch('2026-01-15 12:00') where item_id = 1;
+--transaction update item and recurrence
+begin;
+--update the completed status and the time last
+update Item
+  set complete = FALSE
+  from (select period, time_last from Recurrence)
+  where unixepoch('now', 'localtime') - time_last > period;
+--update the time_last of the recurrences
+update Recurrence 
+  set time_last = time_last + (period * floor((unixepoch('now', 'localtime') - time_last) / period))
+  where unixepoch('now', 'localtime') - time_last > period;
+end;
+
+--delete recurrence
+delete from Recurrence where(id like 1);
