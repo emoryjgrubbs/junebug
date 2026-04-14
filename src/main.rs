@@ -1,5 +1,6 @@
 use std::io::{self, Write};
 use rusqlite::{Connection, Result, params};
+use chrono::{DateTime, Local, TimeZone, Utc, NaiveDateTime, NaiveDate};
 
 #[derive(Debug, Clone)]
 struct List {
@@ -15,6 +16,18 @@ struct Item {
     text: String,
     parent: Option<i32>,
     next: Option<i32>,
+    recurrence: Option<Recurrence>,
+}
+#[derive(Debug, Clone)]
+struct IndexedItem {
+    index: usize,
+    item: Item,
+}
+
+#[derive(Debug, Clone)]
+struct Recurrence {
+    period: i64,
+    time_last: i64,
 }
 
 fn main() -> Result<()>{
@@ -39,32 +52,33 @@ fn main() -> Result<()>{
               FOREIGN KEY(list_id) REFERENCES List(id) on delete CASCADE
             );
             create table if not exists Recurrence(
-              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              id INTEGER PRIMARY KEY,
               period INTEGER NOT NULL,
-              time_last DATETIME NOT NULL,
-              item_id INTEGER UNIQUE NOT NULL,
-              FOREIGN KEY(item_id) REFERENCES Item(id) on delete CASCADE
+              time_last DATETIME NOT NULL DEFAULT(datetime('now')),
+              FOREIGN KEY(id) REFERENCES Item(id) on delete CASCADE
             );
             create table if not exists Schedule(
-              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              id INTEGER PRIMARY KEY,
               activation_date DATETIME NOT NULL,
-              item_id INTEGER UNIQUE NOT NULL,
-              FOREIGN KEY(item_id) REFERENCES Item(id) on delete CASCADE
+              FOREIGN KEY(id) REFERENCES Item(id) on delete CASCADE
             );
             PRAGMA foreign_keys = ON;
             begin;
             --update the completed status and the time last
             update Item
               set complete = FALSE
-              from (select period, time_last from Recurrence)
-              where unixepoch('now', 'localtime') - time_last > period;
+              where exists (select period, time_last from Recurrence where id = Item.id
+                and unixepoch('now') - time_last > period);
             --update the time_last of the recurrences
             update Recurrence 
-              set time_last = time_last + (period * floor((unixepoch('now', 'localtime') - time_last) / period))
-              where unixepoch('now', 'localtime') - time_last > period;
+              set time_last = case
+                when period like 0 then unixepoch('now')
+                else time_last + (period * floor((unixepoch('now') - time_last) / period))
+                end
+              where unixepoch('now') - time_last > period;
             --remove item from schedule after activation date
             delete from Schedule
-              where unixepoch('now', 'localtime') - activation_date > 0;
+              where unixepoch('now') - activation_date > 0;
             end;
         ",
     )?;
@@ -160,11 +174,11 @@ fn main() -> Result<()>{
                                 };
                                 let item_text = prompt_usr("Enter Item Text? ".to_string());
                                 if let Some(ref mut item_list_unwrap) = item_list {
-                                    add_item(&db, pos_int, item_text, next, current_list.clone().unwrap().id, item_list_unwrap)
+                                    add_item(&db, pos_int, item_text, next, current_list.clone().unwrap().id, item_list_unwrap);
                                 }
                             }
                         }
-                        else { println!("\tError While Parsing Position as USize"); }
+                        else { println!("\tError While Parsing Position as usize"); }
                     },
                     "edit" => {
                         let item_pos = prompt_usr("Enter Item Position? ".to_string());
@@ -173,11 +187,11 @@ fn main() -> Result<()>{
                             if pos_int < item_list_len {
                                 let new_text = prompt_usr("Enter Item Text? ".to_string());
                                 if let Some(ref mut item_list_unwrap) = item_list {
-                                    edit_item(&db, pos_int, new_text, item_list_unwrap)
+                                    edit_item(&db, pos_int, new_text, item_list_unwrap);
                                 }
                             }
                         }
-                        else { println!("\tError While Parsing Position as USize"); }
+                        else { println!("\tError While Parsing Position as usize"); }
                     },
                     "delete" => {
                         let item_pos = prompt_usr("Enter Item Position? ".to_string());
@@ -191,7 +205,7 @@ fn main() -> Result<()>{
                                 }
                             }
                         }
-                        else { println!("\tError While Parsing Position as USize"); }
+                        else { println!("\tError While Parsing Position as usize"); }
                     },
                     "move" => {
                         let item_pos_old = prompt_usr("Enter Item Position? ".to_string());
@@ -206,7 +220,7 @@ fn main() -> Result<()>{
                                 }
                             }
                         }
-                        else { println!("\tError While Parsing Position as USize"); }
+                        else { println!("\tError While Parsing Position as usize"); }
                     },
                     "indent" => {
                         let item_pos = prompt_usr("Enter Item Position? ".to_string());
@@ -214,13 +228,84 @@ fn main() -> Result<()>{
                             let item_list_len = item_list.clone().unwrap().len();
                             if pos_int < item_list_len {
                                 if let Some(ref mut item_list_unwrap) = item_list {
-                                    indent_item(&db, pos_int, item_list_unwrap)
+                                    indent_item(&db, pos_int, item_list_unwrap);
                                 }
                             }
                         }
-                        else { println!("\tError While Parsing Position as USize"); }
+                        else { println!("\tError While Parsing Position as usize"); }
                     },
-                    "recur" => {},
+                    "recur" => {
+                        let item_pos = prompt_usr("Enter Item Position? ".to_string());
+                        if let Ok(pos_int) = item_pos.parse::<usize>() {
+                            let item_list_len = item_list.clone().unwrap().len();
+                            if pos_int < item_list_len {
+                                let time_start = {
+                                    let remove = prompt_usr("Remove Recurrence? [y/N] ".to_string());
+                                    if remove == "y" {
+                                        Some("remove".to_string())
+                                    }
+                                    else {
+                                        let start_now = prompt_usr("Start Recurrence Now? [Y/n] ".to_string());
+                                        if start_now == "n" {
+                                            let year = prompt_usr("Enter Start Year? ".to_string());
+                                            let month = prompt_usr("Enter Start Month? ".to_string());
+                                            let day = prompt_usr("Enter Start Day? ".to_string());
+                                            let hour = prompt_usr("Enter Start Hour? ".to_string());
+                                            let minute = prompt_usr("Enter Start Minute? ".to_string());
+                                            //create date as yyyy-mm-dd
+                                            let date = format!("{:0>4}-", year).to_owned() + format!("{:0>2}-", month).as_str() + format!("{:0>2}", day).as_str();
+                                            //create time as hh:mm
+                                            let time = format!("{:0>2}:", hour).to_owned() + format!("{:0>2}:00", minute).as_str();
+                                            let datetime = date + "T" + time.as_str();
+                                            if let Ok(test) = datetime.parse::<NaiveDateTime>() {
+                                                Some(datetime)
+                                            }
+                                            else { None }
+                                        }
+                                        else { Some("now".to_string()) }
+                                    }
+                                }; 
+                                let period = {
+                                    if let Some(_) = time_start && time_start != Some("remove".to_string()) {
+                                        let mut days = prompt_usr("Enter Days Between Recurrences? ".to_string());
+                                        let mut hours = prompt_usr("Enter Hours Between Recurrences? ".to_string());
+                                        let mut minutes = prompt_usr("Enter Minutes Between Recurrences? ".to_string());
+                                        let mut seconds = prompt_usr("Enter Seconds Between Recurrences? ".to_string());
+                                        if days == "" { days = "0".to_string(); }
+                                        if hours == "" { hours = "0".to_string(); }
+                                        if minutes == "" { minutes = "0".to_string(); }
+                                        if seconds == "" { seconds = "0".to_string(); }
+                                        if let Ok(days_int) = days.parse::<i64>() &&
+                                            let Ok(hours_int) = hours.parse::<i64>() &&
+                                            let Ok(minutes_int) = minutes.parse::<i64>() &&
+                                            let Ok(seconds_int) = seconds.parse::<i64>()
+                                        {
+                                            if days_int >= 0 && hours_int >= 0 && minutes_int >= 0 && seconds_int >= 0 {
+                                                let mut period_calculation = seconds_int;
+                                                period_calculation += 60 * minutes_int;
+                                                period_calculation += 3600 * hours_int;
+                                                period_calculation += 86400 * days_int;
+                                                Some(period_calculation)
+                                            }
+                                            else {
+                                                println!("\tError Invalid Period Value");
+                                                None
+                                            }
+                                        }
+                                        else {
+                                            println!("\tError While Parsing Period as i32");
+                                            None
+                                        }
+                                    }
+                                    else { None }
+                                };
+                                if let Some(ref mut item_list_unwrap) = item_list {
+                                    recur_item(&db, pos_int, period, time_start, item_list_unwrap);
+                                }
+                            }
+                        }
+                        else { println!("\tError While Parsing Position as usize"); }
+                    },
                     "schedule" => {},
                     "mark" => {
                         let item_pos = prompt_usr("Enter Item Position? ".to_string());
@@ -228,14 +313,14 @@ fn main() -> Result<()>{
                             let item_list_len = item_list.clone().unwrap().len();
                             if pos_int < item_list_len {
                                 if let Some(ref mut item_list_unwrap) = item_list {
-                                    mark_item(&db, pos_int, item_list_unwrap)
+                                    mark_item(&db, pos_int, item_list_unwrap);
                                 }
                             }
                         }
-                        else { println!("\tError While Parsing Position as USize"); }
+                        else { println!("\tError While Parsing Position as usize"); }
                     },
                     "update" => {
-                        item_list = update_items(&db, unwrapped_list)
+                        item_list = update_items(&db, unwrapped_list);
                     },
                     "print" => { 
                         print_items(unwrapped_list, &item_list.clone().unwrap());
@@ -277,16 +362,29 @@ fn get_list_info(list_name: String, db: &Connection) -> Result<List, rusqlite::E
 
 //query the db for items of a list and generate the ordered list of items
 fn build_ordered_items(db: &Connection, id: i32) -> Vec<Item> {
-    let stmt = db.prepare("select id, complete, text, parent, next from Item where list_id like ?1");
+    let stmt = db.prepare(
+        "select i.id, i.complete, i.text, i.parent, i.next, r.period, r.time_last
+            from Item as i left join Recurrence as r on i.id = r.id
+            where list_id like ?1"
+    );
     if let Ok(mut prepared_stmt) = stmt {
         let items = prepared_stmt.query_map(params![id], |row| {
-            let parent;
-            if let Ok(p_id) = row.get(3) { parent = Some(p_id); }
-            else { parent = None; }
-            let next;
-            if let Ok(n_id) = row.get(4) { next = Some(n_id); }
-            else { next = None }
-            Ok(Item { id: row.get(0)?, complete: row.get(1)?, text: row.get(2)?, parent, next })
+            //println!("{:?}", row.get::<usize, bool>(1)?);
+            let parent = {
+                if let Ok(p_id) = row.get(3) { Some(p_id) }
+                else { None::<i32> }
+            };
+            let next = {
+                if let Ok(n_id) = row.get(4) { Some(n_id) }
+                else { None::<i32> }
+            };
+            let recurrence = {
+                if let Ok(period) = row.get(5) && let Ok(time_last) = row.get(6) {
+                    Some(Recurrence { period, time_last })
+                }
+                else { None::<Recurrence> }
+            };
+            Ok(Item { id: row.get(0)?, complete: row.get(1)?, text: row.get(2)?, parent, next , recurrence })
         });
         if let Ok(items_valid) = items {
             let mut unsorted_list = vec![];
@@ -353,7 +451,7 @@ fn add_item(db: &Connection, position: usize, text: String, next_id: Option<i32>
         if let Ok(_) = item_updated {
             let _ = db.execute("end", []);
             //update memory list
-            item_list.insert(position, Item{ id: valid_id, complete: false, text: text, parent: None, next: next_id });
+            item_list.insert(position, Item{ id: valid_id, complete: false, text: text, parent: None, next: next_id, recurrence: None });
             if position > 0 {
                 item_list[position-1].next = Some(valid_id);
             }
@@ -522,6 +620,43 @@ fn indent_item(db: &Connection, position: usize, item_list: &mut Vec<Item>) {
     }
 }
 
+fn recur_item(db: &Connection, position: usize, period: Option<i64>, start: Option<String>, item_list: &mut Vec<Item>) {
+    if let Some(unwrapped_start) = start {
+        if unwrapped_start == "remove" {
+            let recurrence_deleted = db.execute(
+                "delete from Recurrence where id like ?1",
+                params![item_list[position].id]
+            );
+            if let Ok(_) = recurrence_deleted {
+                item_list[position].recurrence = None;
+            }
+            else { println!("\tError While Deleting Item Recurrence"); }
+        }
+        else {
+            if let Some(unwrapped_period) = period {
+                let datetime = {
+                    if unwrapped_start == "now" {
+                        Local::now()
+                    }
+                    else {
+                        let a = unwrapped_start.parse::<NaiveDateTime>().expect("validitiy check by caller, and successfully inserted");
+                        Local::from_local_datetime(&Local, &a).unwrap()
+                    }
+                };
+                let recurrence_updated = db.execute(
+                    "insert into Recurrence(id, period, time_last) values(?1, ?2, ?3)
+                        on conflict(id) do update set period = excluded.period, time_last = excluded.time_last",
+                    params![item_list[position].id, unwrapped_period, datetime.timestamp()]
+                );
+                if let Ok(_) = recurrence_updated {
+                    item_list[position].recurrence = Some(Recurrence { period: unwrapped_period, time_last: datetime.timestamp() });
+                }
+                else { println!("\tError While Updating Item Recurrence"); }
+            }
+        }
+    }
+}
+
 //flip completion status
 fn mark_item(db: &Connection, position: usize, item_list: &mut Vec<Item>) {
     // sqlite bools are 0 or 1, 1-1=0 true->false, |0-1|=|-1|=1 false->true
@@ -550,40 +685,94 @@ fn print_completion(item_list: &Vec<Item>) {
     //  a completed parent should show all children as completed
     //  a completed child should show info on parent
     let mut i = 0;
+    let mut empty = true;
+    let mut last_parent = None;
+    let mut add_parent = false;
+    let mut completed = vec![];
     println!("\tUn-Completed:");
     for item in item_list {
+        // any item with no parent may be needed if a sub item is complete or it is complete as a
+        //  parent
+        if let None = item.parent { 
+            last_parent = Some(IndexedItem{ index: i, item: item.clone() });
+            add_parent = true;
+        }
         if !item.complete {
-            print!("\t");
-            if let Some(_) = item.parent { print!("  "); }
-            println!("{0: >2}: {1}", i, item.text);
-            i += 1;
-        }
-    }
-    if i == 0 { println!("\t..."); }
-    i = 0;
-    let mut last_parent = &item_list[0];
-    println!("\tCompleted:");
-    for item in item_list {
-        if item.complete {
-            print!("\t");
-            if let Some(_) = item.parent { 
-                println!("--: {}", last_parent.text);
-                print!("\t  ");
+            // if an uncompleted item has no parents it will be printed
+            if let None = item.parent {
+                if let Some(ref recurrence) = item.recurrence && let Some(next_reoccurence) = DateTime::from_timestamp_secs(recurrence.time_last + recurrence.period) {
+                    println!("\t{0: >2}: {1}\t\tReoccurs: {2}", i, item.text, next_reoccurence.with_timezone(&Local));
+                }
+                else {
+                    println!("\t{0: >2}: {1}", i, item.text);
+                }
+                empty = false;
             }
-            else { last_parent = &item; }
-            println!("{0: >2}: {1}", i, item.text);
-            i += 1;
+            else {
+                // if the last parent is complete and not added to the list, add it
+                //  then add the current item
+                if let Some(ref unwrapped_parent) = last_parent && unwrapped_parent.item.complete {
+                    if add_parent {
+                        completed.push(IndexedItem { index: unwrapped_parent.clone().index, item: unwrapped_parent.clone().item });
+                    }
+                    completed.push(IndexedItem { index:i, item: item.clone() });
+                }
+                // the item and its parent are uncompleted so it may be printed
+                else {
+                    if let Some(ref recurrence) = item.recurrence && let Some(next_reoccurence) = DateTime::from_timestamp_secs(recurrence.time_last + recurrence.period) {
+                        println!("\t  {0: >2}: {1}\t\tReoccurs: {2}", i, item.text, next_reoccurence.with_timezone(&Local));
+                    }
+                    else {
+                        println!("\t  {0: >2}: {1}", i, item.text);
+                    }
+                    empty = false;
+                }
+            }
+        }
+        // the item is complete, so add the parent if it exists and is not in the list and the
+        //  current item
+        else {
+            if let None = item.parent { add_parent = false; }
+            if let Some(ref unwrapped_parent) = last_parent && add_parent  {
+                completed.push(IndexedItem { index: unwrapped_parent.clone().index, item: unwrapped_parent.clone().item });
+                add_parent = false;
+            }
+            completed.push(IndexedItem { index: i, item: item.clone() });
+        }
+        i += 1;
+    }
+    if empty { println!("\t..."); }
+    empty = true;
+    println!("\tCompleted:");
+    for indexed_item in completed {
+        if let None = indexed_item.item.parent && !indexed_item.item.complete {
+            println!("\t--- {}", indexed_item.item.text);
+        }
+        else {
+            print!("\t");
+            if let Some(_) = indexed_item.item.parent { print!("  "); }
+            if let Some(ref recurrence) = indexed_item.item.recurrence && let Some(next_reoccurence) = DateTime::from_timestamp_secs(recurrence.time_last + recurrence.period) {
+                println!("{0: >2}: {1}\t\tReoccurs: {2}", indexed_item.index, indexed_item.item.text, next_reoccurence.with_timezone(&Local));
+            }
+            else {
+                println!("{0: >2}: {1}", indexed_item.index, indexed_item.item.text);
+            }
+            empty = false;
         }
     }
-    if i == 0 { println!("\t..."); }
+    if empty { println!("\t..."); }
 }
 fn print_basic(item_list: &Vec<Item>) {
     let mut i = 0;
     for item in item_list {
         print!("\t");
         if let Some(_) = item.parent { print!("  "); }
-        println!("{0: >2}: {1}", i, item.text);
-        //println!("{0: >2}: id = {1} parent = {2:?} next = {3:?}", i, item.id, item.parent, item.next);
+        if let Some(ref recurrence) = item.recurrence && let Some(next_reoccurence) = DateTime::from_timestamp_secs(recurrence.time_last + recurrence.period) {
+            println!("{0: >2}: {1}\t\tReoccurs: {2}", i, item.text, next_reoccurence.with_timezone(&Local));
+        }
+        else {
+            println!("{0: >2}: {1}", i, item.text);
+        }
         i += 1;
     }
     if i == 0 {
@@ -599,15 +788,18 @@ fn update_items(db: &Connection, list_info: &List) -> Option<Vec<Item>> {
         --update the completed status and the time last
         update Item
           set complete = FALSE
-          from (select period, time_last from Recurrence)
-          where unixepoch('now', 'localtime') - time_last > period;
+          where exists (select period, time_last from Recurrence where id = Item.id
+            and unixepoch('now') - time_last > period);
         --update the time_last of the recurrences
         update Recurrence 
-          set time_last = time_last + (period * floor((unixepoch('now', 'localtime') - time_last) / period))
-          where unixepoch('now', 'localtime') - time_last > period;
+          set time_last = case
+            when period like 0 then unixepoch('now')
+            else time_last + (period * floor((unixepoch('now') - time_last) / period))
+            end
+          where unixepoch('now') - time_last > period;
         --remove item from schedule after activation date
         delete from Schedule
-          where unixepoch('now', 'localtime') - activation_date > 0;
+          where unixepoch('now') - activation_date > 0;
         end;
     ");
     if let Err(_) = update {
