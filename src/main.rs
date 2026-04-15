@@ -17,6 +17,7 @@ struct Item {
     parent: Option<i32>,
     next: Option<i32>,
     recurrence: Option<Recurrence>,
+    schedule_date: Option<i64>,
 }
 #[derive(Debug, Clone)]
 struct IndexedItem {
@@ -257,7 +258,7 @@ fn main() -> Result<()>{
                                             //create time as hh:mm
                                             let time = format!("{:0>2}:", hour).to_owned() + format!("{:0>2}:00", minute).as_str();
                                             let datetime = date + "T" + time.as_str();
-                                            if let Ok(test) = datetime.parse::<NaiveDateTime>() {
+                                            if let Ok(_) = datetime.parse::<NaiveDateTime>() {
                                                 Some(datetime)
                                             }
                                             else { None }
@@ -306,7 +307,40 @@ fn main() -> Result<()>{
                         }
                         else { println!("\tError While Parsing Position as usize"); }
                     },
-                    "schedule" => {},
+                    "schedule" => {
+                        let item_pos = prompt_usr("Enter Item Position? ".to_string());
+                        if let Ok(pos_int) = item_pos.parse::<usize>() {
+                            let item_list_len = item_list.clone().unwrap().len();
+                            if pos_int < item_list_len {
+                                let time_start = {
+                                    let remove = prompt_usr("Remove Schedule? [y/N] ".to_string());
+                                    if remove == "y" {
+                                        Some("remove".to_string())
+                                    }
+                                    else {
+                                        let year = prompt_usr("Enter Schedule Year? ".to_string());
+                                        let month = prompt_usr("Enter Schedule Month? ".to_string());
+                                        let day = prompt_usr("Enter Schedule Day? ".to_string());
+                                        let hour = prompt_usr("Enter Schedule Hour? ".to_string());
+                                        let minute = prompt_usr("Enter Schedule Minute? ".to_string());
+                                        //create date as yyyy-mm-dd
+                                        let date = format!("{:0>4}-", year).to_owned() + format!("{:0>2}-", month).as_str() + format!("{:0>2}", day).as_str();
+                                        //create time as hh:mm
+                                        let time = format!("{:0>2}:", hour).to_owned() + format!("{:0>2}:00", minute).as_str();
+                                        let datetime = date + "T" + time.as_str();
+                                        if let Ok(_) = datetime.parse::<NaiveDateTime>() {
+                                            Some(datetime)
+                                        }
+                                        else { None }
+                                    }
+                                }; 
+                                if let Some(ref mut item_list_unwrap) = item_list {
+                                    schedule_item(&db, pos_int, time_start, item_list_unwrap);
+                                }
+                            }
+                        }
+                        else { println!("\tError While Parsing Position as usize"); }
+                    },
                     "mark" => {
                         let item_pos = prompt_usr("Enter Item Position? ".to_string());
                         if let Ok(pos_int) = item_pos.parse::<usize>() {
@@ -363,8 +397,9 @@ fn get_list_info(list_name: String, db: &Connection) -> Result<List, rusqlite::E
 //query the db for items of a list and generate the ordered list of items
 fn build_ordered_items(db: &Connection, id: i32) -> Vec<Item> {
     let stmt = db.prepare(
-        "select i.id, i.complete, i.text, i.parent, i.next, r.period, r.time_last
+        "select i.id, i.complete, i.text, i.parent, i.next, r.period, r.time_last, s.activation_date
             from Item as i left join Recurrence as r on i.id = r.id
+                left join Schedule as s on i.id = s.id
             where list_id like ?1"
     );
     if let Ok(mut prepared_stmt) = stmt {
@@ -384,7 +419,13 @@ fn build_ordered_items(db: &Connection, id: i32) -> Vec<Item> {
                 }
                 else { None::<Recurrence> }
             };
-            Ok(Item { id: row.get(0)?, complete: row.get(1)?, text: row.get(2)?, parent, next , recurrence })
+            let schedule_date = {
+                if let Ok(date) = row.get(7) {
+                    Some(date)
+                }
+                else { None::<i64> }
+            };
+            Ok(Item { id: row.get(0)?, complete: row.get(1)?, text: row.get(2)?, parent, next , recurrence, schedule_date })
         });
         if let Ok(items_valid) = items {
             let mut unsorted_list = vec![];
@@ -451,7 +492,7 @@ fn add_item(db: &Connection, position: usize, text: String, next_id: Option<i32>
         if let Ok(_) = item_updated {
             let _ = db.execute("end", []);
             //update memory list
-            item_list.insert(position, Item{ id: valid_id, complete: false, text: text, parent: None, next: next_id, recurrence: None });
+            item_list.insert(position, Item{ id: valid_id, complete: false, text: text, parent: None, next: next_id, recurrence: None, schedule_date: None });
             if position > 0 {
                 item_list[position-1].next = Some(valid_id);
             }
@@ -657,6 +698,41 @@ fn recur_item(db: &Connection, position: usize, period: Option<i64>, start: Opti
     }
 }
 
+fn schedule_item(db: &Connection, position: usize, start: Option<String>, item_list: &mut Vec<Item>) {
+    if let Some(unwrapped_start) = start {
+        if unwrapped_start == "remove" {
+            let recurrence_deleted = db.execute(
+                "delete from Recurrence where id like ?1",
+                params![item_list[position].id]
+            );
+            if let Ok(_) = recurrence_deleted {
+                item_list[position].recurrence = None;
+            }
+            else { println!("\tError While Deleting Item Recurrence"); }
+        }
+        else {
+            let datetime = {
+                if unwrapped_start == "now" {
+                    Local::now()
+                }
+                else {
+                    let a = unwrapped_start.parse::<NaiveDateTime>().expect("validitiy check by caller, and successfully inserted");
+                    Local::from_local_datetime(&Local, &a).unwrap()
+                }
+            };
+            let recurrence_updated = db.execute(
+                "insert into Schedule(id, activation_date) values(?1, ?2)
+                    on conflict(id) do update set activation_date = excluded.activation_date",
+                params![item_list[position].id, datetime.timestamp()]
+            );
+            if let Ok(_) = recurrence_updated {
+                item_list[position].schedule_date = Some(datetime.timestamp());
+            }
+            else { println!("\tError While Updating Item Recurrence"); }
+        }
+    }
+}
+
 //flip completion status
 fn mark_item(db: &Connection, position: usize, item_list: &mut Vec<Item>) {
     // sqlite bools are 0 or 1, 1-1=0 true->false, |0-1|=|-1|=1 false->true
@@ -700,12 +776,16 @@ fn print_completion(item_list: &Vec<Item>) {
         if !item.complete {
             // if an uncompleted item has no parents it will be printed
             if let None = item.parent {
+                print!("\t");
+                if let Some(_) = item.parent { print!("  "); }
+                print!("{0: >2}: {1}", i, item.text);
                 if let Some(ref recurrence) = item.recurrence && let Some(next_reoccurence) = DateTime::from_timestamp_secs(recurrence.time_last + recurrence.period) {
-                    println!("\t{0: >2}: {1}\t\tReoccurs: {2}", i, item.text, next_reoccurence.with_timezone(&Local));
+                    print!("\t\tRecurring: {}", next_reoccurence.with_timezone(&Local));
                 }
-                else {
-                    println!("\t{0: >2}: {1}", i, item.text);
+                if let Some(ref schedule_date) = item.schedule_date && let Some(unwrapped_date) = DateTime::from_timestamp_secs(*schedule_date) {
+                    print!("\t\tScheduled: {}", unwrapped_date.with_timezone(&Local));
                 }
+                println!("");
                 empty = false;
             }
             else {
@@ -719,12 +799,16 @@ fn print_completion(item_list: &Vec<Item>) {
                 }
                 // the item and its parent are uncompleted so it may be printed
                 else {
+                    print!("\t");
+                    if let Some(_) = item.parent { print!("  "); }
+                    print!("{0: >2}: {1}", i, item.text);
                     if let Some(ref recurrence) = item.recurrence && let Some(next_reoccurence) = DateTime::from_timestamp_secs(recurrence.time_last + recurrence.period) {
-                        println!("\t  {0: >2}: {1}\t\tReoccurs: {2}", i, item.text, next_reoccurence.with_timezone(&Local));
+                        print!("\t\tRecurring: {}", next_reoccurence.with_timezone(&Local));
                     }
-                    else {
-                        println!("\t  {0: >2}: {1}", i, item.text);
+                    if let Some(ref schedule_date) = item.schedule_date && let Some(unwrapped_date) = DateTime::from_timestamp_secs(*schedule_date) {
+                        print!("\t\tScheduled: {}", unwrapped_date.with_timezone(&Local));
                     }
+                    println!("");
                     empty = false;
                 }
             }
@@ -751,12 +835,14 @@ fn print_completion(item_list: &Vec<Item>) {
         else {
             print!("\t");
             if let Some(_) = indexed_item.item.parent { print!("  "); }
+            print!("{0: >2}: {1}", indexed_item.index, indexed_item.item.text);
             if let Some(ref recurrence) = indexed_item.item.recurrence && let Some(next_reoccurence) = DateTime::from_timestamp_secs(recurrence.time_last + recurrence.period) {
-                println!("{0: >2}: {1}\t\tReoccurs: {2}", indexed_item.index, indexed_item.item.text, next_reoccurence.with_timezone(&Local));
+                print!("\t\tRecurring: {}", next_reoccurence.with_timezone(&Local));
             }
-            else {
-                println!("{0: >2}: {1}", indexed_item.index, indexed_item.item.text);
+            if let Some(ref schedule_date) = indexed_item.item.schedule_date && let Some(unwrapped_date) = DateTime::from_timestamp_secs(*schedule_date) {
+                print!("\t\tScheduled: {}", unwrapped_date.with_timezone(&Local));
             }
+            println!("");
             empty = false;
         }
     }
@@ -767,12 +853,14 @@ fn print_basic(item_list: &Vec<Item>) {
     for item in item_list {
         print!("\t");
         if let Some(_) = item.parent { print!("  "); }
+        print!("{0: >2}: {1}", i, item.text);
         if let Some(ref recurrence) = item.recurrence && let Some(next_reoccurence) = DateTime::from_timestamp_secs(recurrence.time_last + recurrence.period) {
-            println!("{0: >2}: {1}\t\tReoccurs: {2}", i, item.text, next_reoccurence.with_timezone(&Local));
+            print!("\t\tRecurring: {}", next_reoccurence.with_timezone(&Local));
         }
-        else {
-            println!("{0: >2}: {1}", i, item.text);
+        if let Some(ref schedule_date) = item.schedule_date && let Some(unwrapped_date) = DateTime::from_timestamp_secs(*schedule_date) {
+            print!("\t\tScheduled: {}", unwrapped_date.with_timezone(&Local));
         }
+        println!("");
         i += 1;
     }
     if i == 0 {
