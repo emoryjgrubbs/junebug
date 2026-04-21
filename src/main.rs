@@ -48,44 +48,45 @@ fn main() -> Result<()>{
                     if check_boxes_input.to_lowercase().as_str() == "n" { false }
                     else { true }
                 };
-                let list_inserted = db.execute(
+                let _list_inserted = db.execute(
                     "insert into List(name, check_boxes) values(?1,?2)", 
                     params![list_name, check_boxes]
-                );
-                if let Ok(1) = list_inserted {
-                    current_list = Some(get_list_info(list_name, &db)?);
-                    item_list = Some(vec![]);
-                }
-                else {
-                    println!("\tError Occured While Adding {}", list_name)
-                }
+                )?;
+                current_list = Some(get_list_info(list_name, &db)?);
+                item_list = Some(vec![]);
             },
             "edit" => {
                 let list_name = prompt_usr("Enter List Name? ".to_string());
-                let list_selected = db.query_one(
+                let _list_selected = db.query_one(
                     "select name from List where name like ?1",
                     params![list_name],
                     |row| row.get::<usize, String>(0)
-                );
-                if let Ok(_) = list_selected {
-                    current_list = Some(get_list_info(list_name, &db)?);
-                    if let Some(ref unwrapped_list) = current_list {
-                        item_list = update_items(&db, unwrapped_list)?;
-                    }
+                )?;
+                current_list = Some(get_list_info(list_name.clone(), &db)?);
+                if let Some(ref unwrapped_list) = current_list {
+                    item_list = update_items(&db, unwrapped_list)?;
                 }
                 else {
                     println!("\tError Occured While Editing {}", list_name)
                 }
             },
+            "toggle" => {
+                let list_name = prompt_usr("Enter List Name? ".to_string());
+                // sqlite bools are 0 or 1, 1-1=0 true->false, |0-1|=|-1|=1 false->true
+                let _list_toggled = db.execute(
+                    "update List set check_boxes = abs(check_boxes - 1) where name like ?1",
+                    params![list_name]
+                )?;
+                if let Some(ref mut unwrapped_list) = current_list && unwrapped_list.name == list_name {
+                    unwrapped_list.check_boxes = !unwrapped_list.check_boxes;
+                }
+            },
             "delete" => {
                 let list_name = prompt_usr("Enter List Name? ".to_string());
-                let list_deleted = db.execute(
+                let _list_deleted = db.execute(
                     "delete from List where name like ?1", 
                     params![list_name]
-                );
-                if let Err(_) = list_deleted {
-                    println!("\tError Occured While Deleting {}", list_name)
-                }
+                )?;
                 if let Some(ref unwrapped_list) = current_list {
                     if unwrapped_list.name == list_name {
                         current_list = None;
