@@ -7,6 +7,8 @@ struct List {
     id: i32,
     name: String,
     check_boxes: bool,
+    archived: bool,
+    hide_complete: bool,
     item_count: i32,
 }
 
@@ -70,7 +72,7 @@ fn main() -> Result<()>{
                     println!("\tError Occured While Editing {}", list_name)
                 }
             },
-            "toggle" => {
+            "check_boxes" => {
                 let list_name = prompt_usr("Enter List Name? ".to_string());
                 // sqlite bools are 0 or 1, 1-1=0 true->false, |0-1|=|-1|=1 false->true
                 let _list_toggled = db.execute(
@@ -79,6 +81,17 @@ fn main() -> Result<()>{
                 )?;
                 if let Some(ref mut unwrapped_list) = current_list && unwrapped_list.name == list_name {
                     unwrapped_list.check_boxes = !unwrapped_list.check_boxes;
+                }
+            },
+            "archive" => {
+                let list_name = prompt_usr("Enter List Name? ".to_string());
+                // sqlite bools are 0 or 1, 1-1=0 true->false, |0-1|=|-1|=1 false->true
+                let _list_toggled = db.execute(
+                    "update List set archived = abs(archived - 1) where name like ?1",
+                    params![list_name]
+                )?;
+                if let Some(ref mut unwrapped_list) = current_list && unwrapped_list.name == list_name {
+                    unwrapped_list.archived = !unwrapped_list.archived;
                 }
             },
             "delete" => {
@@ -96,13 +109,14 @@ fn main() -> Result<()>{
             },
             "print" => {
                 let stmt = db.prepare(
-                    "select l.id, l.name, l.check_boxes, count(i.list_id) from List as l
+                    "select l.id, l.name, l.check_boxes, archived, count(i.list_id) from List as l
                             left join Item as i on l.id = i.list_id group by i.list_id"
                 );
                 if let Ok(mut prepared_stmt) = stmt {
                     let lists = prepared_stmt.query_map([],
                         |row| {
-                            Ok(List { id: row.get(0)?, name: row.get(1)?, check_boxes: row.get(2)?, item_count: row.get(3)? })
+                            //NOTE don't care about whether completion is hidden while printing here
+                            Ok(List { id: row.get(0)?, name: row.get(1)?, check_boxes: row.get(2)?, archived: row.get(3)?, hide_complete: false, item_count: row.get(4)?, })
                         }
                     );
                     if let Ok(valid_lists) = lists {
@@ -110,7 +124,7 @@ fn main() -> Result<()>{
                         for list in valid_lists {
                             has_lists = true;
                             if let Ok(ref valid_list) = list {
-                                println!("\t{0}\tcompletion: {1}, count: {2}", valid_list.name, valid_list.check_boxes, valid_list.item_count);
+                                println!("\t{0}\tcompletion: {1}, archived: {2}, count: {3}", valid_list.name, valid_list.check_boxes, valid_list.archived, valid_list.item_count);
                             }
                         }
                         if !has_lists { println!("\tNo Lists In File.."); }
@@ -120,7 +134,7 @@ fn main() -> Result<()>{
             "exit" => { println!("\tExiting.."); break 'list; },
             _ => println!("\tUnknown Command"),
         }
-        if let Some(ref unwrapped_list) = current_list {
+        if let Some(ref mut unwrapped_list) = current_list.clone() {
             'item: loop {
                 let item_command = prompt_usr("Enter Item Command? ".to_string());
                 match item_command.to_lowercase().as_str() {
@@ -312,9 +326,10 @@ fn main() -> Result<()>{
                     "update" => {
                         item_list = update_items(&mut db, unwrapped_list)?;
                     },
-                    "print" => { 
-                        print_items(unwrapped_list, &item_list.clone().unwrap());
+                    "hide" => {
+                        hide_complete(&mut db, unwrapped_list)?;
                     },
+                    "print" => { print_items(unwrapped_list, &item_list.clone().unwrap()); },
                     "list" => { println!("\tMoving To List Commands.."); break 'item; },
                     "exit" => { println!("\tExiting.."); break 'list; },
                     _ => println!("\tUnknown Command"),
@@ -341,7 +356,9 @@ fn initialize_db(db: &Connection) -> Result<(), rusqlite::Error> {
         "create table if not exists List(
               id INTEGER PRIMARY KEY AUTOINCREMENT,
               name TEXT UNIQUE NOT NULL,
-              check_boxes BOOLEAN NOT NULL DEFAULT(FALSE)
+              check_boxes BOOLEAN NOT NULL DEFAULT(FALSE),
+              archived BOOLEAN NOT NULL DEFAULT(FALSE),
+              hide_complete BOOLEAN NOT NULL DEFAULT(FALSE)
             );
             create table if not exists Item(
               id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -373,13 +390,13 @@ fn initialize_db(db: &Connection) -> Result<(), rusqlite::Error> {
 // query the db for a desired lists information (id, name, completion mode, and item count)
 fn get_list_info(list_name: String, db: &Connection) -> Result<List, rusqlite::Error> {
     db.query_one(
-        "select l.id, l.name, l.check_boxes, count(i.list_id) from List as l
+        "select l.id, l.name, l.check_boxes, l.archived, l.hide_complete, count(i.list_id) from List as l
             left join Item as i on l.id = i.list_id
             where name like ?1
             group by i.list_id",
         params![list_name],
         |row| {
-            Ok(List { id: row.get(0)?, name: row.get(1)?, check_boxes: row.get(2)?, item_count: row.get(3)? })
+            Ok(List { id: row.get(0)?, name: row.get(1)?, check_boxes: row.get(2)?, archived: row.get(3)?, hide_complete: row.get(4)?, item_count: row.get(5)? })
         }
     )
 }
@@ -725,9 +742,20 @@ fn mark_item(db: &mut Connection, position: usize, item_list: &mut Vec<Item>) ->
     Ok(())
 }
 
+fn hide_complete(db: &mut Connection, list_info: &mut List) -> Result<(), rusqlite::Error> {
+    let tx = db.transaction()?;
+    let _hide_toggled = tx.execute(
+        "update List set hide_complete = abs(hide_complete - 1) where id like ?1",
+        params![list_info.id]
+    )?;
+    list_info.hide_complete = !list_info.hide_complete;
+    tx.commit()?;
+    Ok(())
+}
+
 fn print_items(list_info: &List, item_list: &Vec<Item>) {
     if list_info.check_boxes {
-        print_completion(item_list);
+        print_completion(list_info, item_list);
     }
     else {
         print_basic(item_list);
@@ -737,7 +765,7 @@ fn print_items(list_info: &List, item_list: &Vec<Item>) {
 //  take into acount parent completion while displaying
 //      * a completed parent should show all children as completed
 //      * a completed child should show info on parent
-fn print_completion(item_list: &Vec<Item>) {
+fn print_completion(list_info: &List, item_list: &Vec<Item>) {
     let mut i = 0;
     let mut empty = true;
     let mut completed = vec![];
@@ -758,7 +786,13 @@ fn print_completion(item_list: &Vec<Item>) {
         i += 1;
     }
     if empty { println!("\t..."); }
-    print_completed_items(completed);
+    if !list_info.hide_complete {
+        print_completed_items(completed);
+    }
+    else {
+        println!("\tCompleted:");
+        println!("\t--- HIDDEN");
+    }
 }
 fn print_handle_uncompleted(item: &Item, index: usize, empty: &mut bool, add_parent: &bool, last_parent: &Option<IndexedItem>, completed: &mut Vec<IndexedItem>) {
     // if an uncompleted item has no parents it will be printed
