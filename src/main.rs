@@ -9,6 +9,8 @@ struct List {
     check_boxes: bool,
     archived: bool,
     hide_complete: bool,
+    time_created: i64,
+    time_edited: i64,
     item_count: i32,
 }
 
@@ -119,7 +121,7 @@ fn main() -> Result<()>{
                                 };
                                 let item_text = prompt_usr("Enter Item Text? ".to_string());
                                 if let Some(ref mut item_list_unwrap) = item_list {
-                                    add_item(&mut db, pos_int, item_text, next, current_list.clone().unwrap().id, item_list_unwrap)?;
+                                    add_item(&mut db, pos_int, item_text, next, unwrapped_list.id, item_list_unwrap)?;
                                 }
                             }
                         }
@@ -132,7 +134,7 @@ fn main() -> Result<()>{
                             if pos_int < item_list_len {
                                 let new_text = prompt_usr("Enter Item Text? ".to_string());
                                 if let Some(ref mut item_list_unwrap) = item_list {
-                                    edit_item(&mut db, pos_int, new_text, item_list_unwrap)?;
+                                    edit_item(&mut db, pos_int, new_text, unwrapped_list.id, item_list_unwrap)?;
                                 }
                             }
                         }
@@ -144,7 +146,7 @@ fn main() -> Result<()>{
                             let item_list_len = item_list.clone().unwrap().len();
                             if pos_int < item_list_len {
                                 if let Some(ref mut item_list_unwrap) = item_list {
-                                    if let Err(_) = delete_item(&mut db, pos_int, item_list_unwrap) {
+                                    if let Err(_) = delete_item(&mut db, pos_int, unwrapped_list.id, item_list_unwrap) {
                                         item_list = update_items(&db, unwrapped_list)?;
                                     }
                                 }
@@ -159,7 +161,7 @@ fn main() -> Result<()>{
                             let item_list_len = item_list.clone().unwrap().len();
                             if old_int < item_list_len && new_int < item_list_len {
                                 if let Some(ref mut item_list_unwrap) = item_list {
-                                    if let Err(_) = move_item(&mut db, old_int, new_int, item_list_unwrap) {
+                                    if let Err(_) = move_item(&mut db, old_int, new_int, unwrapped_list.id, item_list_unwrap) {
                                         item_list = update_items(&db, unwrapped_list)?;
                                     }
                                 }
@@ -173,7 +175,7 @@ fn main() -> Result<()>{
                             let item_list_len = item_list.clone().unwrap().len();
                             if pos_int < item_list_len {
                                 if let Some(ref mut item_list_unwrap) = item_list {
-                                    indent_item(&mut db, pos_int, item_list_unwrap)?;
+                                    indent_item(&mut db, pos_int, unwrapped_list.id, item_list_unwrap)?;
                                 }
                             }
                         }
@@ -242,7 +244,7 @@ fn main() -> Result<()>{
                                     else { None }
                                 };
                                 if let Some(ref mut item_list_unwrap) = item_list && let Some(unwrapped_period) = period {
-                                    recur_item(&mut db, pos_int, unwrapped_period, time_start, item_list_unwrap)?;
+                                    recur_item(&mut db, pos_int, unwrapped_period, time_start, unwrapped_list.id, item_list_unwrap)?;
                                 }
                             }
                         }
@@ -273,7 +275,7 @@ fn main() -> Result<()>{
                                     }
                                 }; 
                                 if let Some(ref mut item_list_unwrap) = item_list {
-                                    schedule_item(&mut db, pos_int, time_start, item_list_unwrap)?;
+                                    schedule_item(&mut db, pos_int, time_start, unwrapped_list.id, item_list_unwrap)?;
                                 }
                             }
                         }
@@ -285,7 +287,7 @@ fn main() -> Result<()>{
                             let item_list_len = item_list.clone().unwrap().len();
                             if pos_int < item_list_len {
                                 if let Some(ref mut item_list_unwrap) = item_list {
-                                    mark_item(&mut db, pos_int, item_list_unwrap)?;
+                                    mark_item(&mut db, pos_int, unwrapped_list.id, item_list_unwrap)?;
                                 }
                             }
                         }
@@ -326,7 +328,9 @@ fn initialize_db(db: &Connection) -> Result<(), rusqlite::Error> {
               name TEXT NOT NULL,
               check_boxes BOOLEAN NOT NULL DEFAULT(FALSE),
               archived BOOLEAN NOT NULL DEFAULT(FALSE),
-              hide_complete BOOLEAN NOT NULL DEFAULT(FALSE)
+              hide_complete BOOLEAN NOT NULL DEFAULT(FALSE),
+              time_created DATETIME NOT NULL,
+              time_edited DATETIME NOT NULL
             );
             create table if not exists Item(
               id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -342,7 +346,7 @@ fn initialize_db(db: &Connection) -> Result<(), rusqlite::Error> {
             create table if not exists Recurrence(
               id INTEGER PRIMARY KEY,
               period INTEGER NOT NULL,
-              time_last DATETIME NOT NULL DEFAULT(datetime('now')),
+              time_last DATETIME NOT NULL,
               FOREIGN KEY(id) REFERENCES Item(id) on delete CASCADE
             );
             create table if not exists Schedule(
@@ -358,21 +362,22 @@ fn initialize_db(db: &Connection) -> Result<(), rusqlite::Error> {
 // query the db for a desired lists information (id, name, completion mode, and item count)
 fn get_list_info(db: &Connection, list_id: i32) -> Result<List, rusqlite::Error> {
     db.query_one(
-        "select l.id, l.name, l.check_boxes, l.archived, l.hide_complete, count(i.list_id) from List as l
+        "select l.id, l.name, l.check_boxes, l.archived, l.hide_complete, l.time_created, l.time_edited, count(i.list_id) from List as l
             left join Item as i on l.id = i.list_id
             where l.id like ?1
             group by i.list_id",
         params![list_id],
         |row| {
-            Ok(List { id: row.get(0)?, name: row.get(1)?, check_boxes: row.get(2)?, archived: row.get(3)?, hide_complete: row.get(4)?, item_count: row.get(5)? })
+            Ok(List { id: row.get(0)?, name: row.get(1)?, check_boxes: row.get(2)?, archived: row.get(3)?, hide_complete: row.get(4)?, 
+                time_created: row.get(5)?, time_edited: row.get(6)?, item_count: row.get(7)? })
         }
     )
 }
 
 fn add_list(db: &Connection, list_name: String, check_boxes: bool) -> Result<(), rusqlite::Error> {
     let _list_inserted = db.execute(
-        "insert into List(name, check_boxes) values(?1,?2)", 
-        params![list_name, check_boxes]
+        "insert into List(name, check_boxes, time_created, time_edited) values(?1, ?2, ?3, ?3)", 
+        params![list_name, check_boxes, Local::now().timestamp()]
     )?;
     Ok(())
 }
@@ -414,19 +419,24 @@ fn delete_list(db: &Connection, list_id: i32) -> Result<(), rusqlite::Error> {
 
 fn print_lists(db: &Connection) -> Result<(), rusqlite::Error> {
     let mut stmt = db.prepare(
-        "select l.id, l.name, l.check_boxes, archived, hide_complete, count(i.list_id) from List as l
-                left join Item as i on l.id = i.list_id group by l.id"
+        "select l.id, l.name, l.check_boxes, l.archived, l.hide_complete, l.time_created, l.time_edited, count(i.list_id)
+            from List as l left join Item as i on l.id = i.list_id group by l.id"
     )?;
     let lists = stmt.query_map([],
         |row| {
-            Ok(List { id: row.get(0)?, name: row.get(1)?, check_boxes: row.get(2)?, archived: row.get(3)?, hide_complete: row.get(4)?, item_count: row.get(5)?, })
+            Ok(List { id: row.get(0)?, name: row.get(1)?, check_boxes: row.get(2)?, archived: row.get(3)?, hide_complete: row.get(4)?,
+                time_created: row.get(5)?, time_edited: row.get(6)?, item_count: row.get(7)?, })
         }
     )?;
     let mut has_lists = false;
     for list in lists {
         has_lists = true;
         if let Ok(ref valid_list) = list {
-            println!("\t{0}  {1}\tcompletion: {2}, archived: {3}, count: {4}", valid_list.id, valid_list.name, valid_list.check_boxes, valid_list.archived, valid_list.item_count);
+            let formatted_created = format!("{}", DateTime::from_timestamp_secs(valid_list.time_created).unwrap().with_timezone(&Local).format("%Y/%m/%d"));
+            let formatted_edited = format!("{}", DateTime::from_timestamp_secs(valid_list.time_edited).unwrap().with_timezone(&Local).format("%Y/%m/%d %H:%M:%S"));
+            println!("\t{0}  {1}\tcompletion: {2}, archived: {3}, created: {4}, edited: {5}, count: {6}", 
+                valid_list.id, valid_list.name, valid_list.check_boxes, valid_list.archived,
+                formatted_created, formatted_edited, valid_list.item_count);
         }
     }
     if !has_lists { println!("\tNo Lists In File.."); }
@@ -438,6 +448,15 @@ fn print_lists(db: &Connection) -> Result<(), rusqlite::Error> {
 fn update_items(db: &Connection, list_info: &List) -> Result<Option<Vec<Item>>, rusqlite::Error> {
     let _update = db.execute_batch("
         begin;
+        --update the time edited for lists that have items updated
+        update List as l
+          set time_edited = unixepoch('now')
+          where exists (select * from Item as i 
+            join (Recurrence as r full outer join Schedule as s on r.id = s.id) 
+              on i.id = (r.id or s.id)
+            where l.id = i.list_id and 
+              (unixepoch('now') - r.time_last > r.period 
+              or unixepoch('now') > s.activation_date));
         --update the completed status and the time last
         update Item
           set complete = FALSE
@@ -515,6 +534,10 @@ fn get_sorted_items(mut unsorted_list: Vec<Item>) -> Vec<Item> {
 //  pointing to the location
 fn add_item(db: &mut Connection, position: usize, text: String, next_id: Option<i32>, list_id: i32, item_list: &mut Vec<Item>) -> Result<(), rusqlite::Error> {
     let tx = db.transaction()?;
+    let _time_edited_updated = tx.execute(
+        "update List set time_edited = unixepoch('now') where id like ?1",
+        params![list_id]
+    )?;
     let _item_inserted = tx.execute(
         "insert into Item(text, parent, next, list_id) values(?1, ?2, ?3, ?4)", 
         params![text, None::<i32>, next_id, list_id]
@@ -547,8 +570,16 @@ fn add_item(db: &mut Connection, position: usize, text: String, next_id: Option<
 }
 
 // update the text for an item
-fn edit_item(db: &mut Connection, position: usize, new_text: String, item_list: &mut Vec<Item>) -> Result<(), rusqlite::Error> {
+fn edit_item(db: &mut Connection, position: usize, new_text: String, list_id: i32, item_list: &mut Vec<Item>) -> Result<(), rusqlite::Error> {
     let tx = db.transaction()?;
+    let _time_edited_updated = tx.execute(
+        "update List set time_edited = unixepoch('now') where id like ?1",
+        params![list_id]
+    )?;
+    let _time_edited_updated = tx.execute(
+        "update List set time_edited = unixepoch('now') where id like ?1",
+        params![list_id]
+    )?;
     let _item_updated = tx.execute(
         "update Item set text = ?2 where id like ?1",
         params![item_list[position].id, new_text]
@@ -561,8 +592,12 @@ fn edit_item(db: &mut Connection, position: usize, new_text: String, item_list: 
 // removes item from the list, after moving the next value of the item pointing to the deleted item
 //  to the deleted item's next, change parent of the children to None, returning Err(()) if the
 //  transaction cannot be complted after altering memory list
-fn delete_item(db: &mut Connection, position: usize, item_list: &mut Vec<Item>) -> Result<(), rusqlite::Error> {
+fn delete_item(db: &mut Connection, position: usize, list_id: i32, item_list: &mut Vec<Item>) -> Result<(), rusqlite::Error> {
     let tx = db.transaction()?;
+    let _time_edited_updated = tx.execute(
+        "update List set time_edited = unixepoch('now') where id like ?1",
+        params![list_id]
+    )?;
     let _item_updated = tx.execute(
         "update Item set next = ?2 where next like ?1",
         params![item_list[position].id, item_list[position].next]
@@ -583,10 +618,14 @@ fn delete_item(db: &mut Connection, position: usize, item_list: &mut Vec<Item>) 
 // moves item at position old to position new, correcting next values to preserve integrity of order,
 //  updating parent of children where nessesary, returning Err(()) if the transaction cannot be
 //  completed after altering memory list
-fn move_item(db: &mut Connection, pos_old: usize, pos_new: usize, item_list: &mut Vec<Item>) -> Result<(), rusqlite::Error> {
+fn move_item(db: &mut Connection, pos_old: usize, pos_new: usize, list_id: i32, item_list: &mut Vec<Item>) -> Result<(), rusqlite::Error> {
     // item not moving, return
     if pos_old == pos_new { return Ok(()) }
     let tx = db.transaction()?;
+    let _time_edited_updated = tx.execute(
+        "update List set time_edited = unixepoch('now') where id like ?1",
+        params![list_id]
+    )?;
     move_update_order(&tx, pos_old, pos_new, item_list)?;
     // update children
     if let None = item_list[pos_new].parent {
@@ -676,9 +715,13 @@ fn move_get_parent(tx: &Transaction, pos_old: usize, item_list: &mut Vec<Item>) 
 }
 
 // binary opteration, adds a parent if item has none, removes parent if one exists
-fn indent_item(db: &mut Connection, position: usize, item_list: &mut Vec<Item>) -> Result<(), rusqlite::Error> {
+fn indent_item(db: &mut Connection, position: usize, list_id: i32, item_list: &mut Vec<Item>) -> Result<(), rusqlite::Error> {
     let tx = db.transaction()?;
     // item already indented, unindent
+    let _time_edited_updated = tx.execute(
+        "update List set time_edited = unixepoch('now') where id like ?1",
+        params![list_id]
+    )?;
     if let Some(_) = item_list[position].parent {
         let _indent_deleted = tx.execute(
             "update Item set parent = Null where id like ?1",
@@ -699,8 +742,12 @@ fn indent_item(db: &mut Connection, position: usize, item_list: &mut Vec<Item>) 
     Ok(())
 }
 
-fn recur_item(db: &mut Connection, position: usize, period: i64, start: String, item_list: &mut Vec<Item>) -> Result<(), rusqlite::Error> {
+fn recur_item(db: &mut Connection, position: usize, period: i64, start: String, list_id: i32, item_list: &mut Vec<Item>) -> Result<(), rusqlite::Error> {
     let tx = db.transaction()?;
+    let _time_edited_updated = tx.execute(
+        "update List set time_edited = unixepoch('now') where id like ?1",
+        params![list_id]
+    )?;
     if start == "remove" {
         let _recurrence_deleted = tx.execute(
             "delete from Recurrence where id like ?1",
@@ -730,8 +777,12 @@ fn recur_item(db: &mut Connection, position: usize, period: i64, start: String, 
     Ok(())
 }
 
-fn schedule_item(db: &mut Connection, position: usize, start: String, item_list: &mut Vec<Item>) -> Result<(), rusqlite::Error> {
+fn schedule_item(db: &mut Connection, position: usize, start: String, list_id: i32, item_list: &mut Vec<Item>) -> Result<(), rusqlite::Error> {
     let tx = db.transaction()?;
+    let _time_edited_updated = tx.execute(
+        "update List set time_edited = unixepoch('now') where id like ?1",
+        params![list_id]
+    )?;
     if start == "remove" {
         let _schdedule_deleted = tx.execute(
             "delete from Recurrence where id like ?1",
@@ -762,8 +813,12 @@ fn schedule_item(db: &mut Connection, position: usize, start: String, item_list:
 }
 
 // flip completion status
-fn mark_item(db: &mut Connection, position: usize, item_list: &mut Vec<Item>) -> Result<(), rusqlite::Error> {
+fn mark_item(db: &mut Connection, position: usize, list_id: i32, item_list: &mut Vec<Item>) -> Result<(), rusqlite::Error> {
     let tx = db.transaction()?;
+    let _time_edited_updated = tx.execute(
+        "update List set time_edited = unixepoch('now') where id like ?1",
+        params![list_id]
+    )?;
     // sqlite bools are 0 or 1, 1-1=0 true->false, |0-1|=|-1|=1 false->true
     let _item_updated = tx.execute(
         "update Item set complete = abs(complete - 1) where id like ?1",
@@ -776,6 +831,10 @@ fn mark_item(db: &mut Connection, position: usize, item_list: &mut Vec<Item>) ->
 
 fn hide_complete(db: &mut Connection, list_info: &mut List) -> Result<(), rusqlite::Error> {
     let tx = db.transaction()?;
+    let _time_edited_updated = tx.execute(
+        "update List set time_edited = unixepoch('now') where id like ?1",
+        params![list_info.id]
+    )?;
     let _hide_toggled = tx.execute(
         "update List set hide_complete = abs(hide_complete - 1) where id like ?1",
         params![list_info.id]
