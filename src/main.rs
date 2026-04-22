@@ -323,7 +323,7 @@ fn initialize_db(db: &Connection) -> Result<(), rusqlite::Error> {
     db.execute_batch(
         "create table if not exists List(
               id INTEGER PRIMARY KEY AUTOINCREMENT,
-              name TEXT UNIQUE NOT NULL,
+              name TEXT NOT NULL,
               check_boxes BOOLEAN NOT NULL DEFAULT(FALSE),
               archived BOOLEAN NOT NULL DEFAULT(FALSE),
               hide_complete BOOLEAN NOT NULL DEFAULT(FALSE)
@@ -415,7 +415,7 @@ fn delete_list(db: &Connection, list_id: i32) -> Result<(), rusqlite::Error> {
 fn print_lists(db: &Connection) -> Result<(), rusqlite::Error> {
     let mut stmt = db.prepare(
         "select l.id, l.name, l.check_boxes, archived, hide_complete, count(i.list_id) from List as l
-                left join Item as i on l.id = i.list_id group by i.list_id order by l.id"
+                left join Item as i on l.id = i.list_id group by l.id"
     )?;
     let lists = stmt.query_map([],
         |row| {
