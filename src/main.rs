@@ -50,86 +50,54 @@ fn main() -> Result<()>{
                     if check_boxes_input.to_lowercase().as_str() == "n" { false }
                     else { true }
                 };
-                let _list_inserted = db.execute(
-                    "insert into List(name, check_boxes) values(?1,?2)", 
-                    params![list_name, check_boxes]
+                add_list(&db, list_name.clone(), check_boxes)?;
+                let inserted_id = db.query_one(
+                    "select LAST_INSERT_ROWID()", [],
+                    |row| Ok(row.get::<usize, i32>(0)?)
                 )?;
-                current_list = Some(get_list_info(list_name, &db)?);
+                current_list = Some(get_list_info(&db, inserted_id)?);
                 item_list = Some(vec![]);
             },
             "edit" => {
-                let list_name = prompt_usr("Enter List Name? ".to_string());
-                let _list_selected = db.query_one(
-                    "select name from List where name like ?1",
-                    params![list_name],
-                    |row| row.get::<usize, String>(0)
-                )?;
-                current_list = Some(get_list_info(list_name.clone(), &db)?);
-                if let Some(ref unwrapped_list) = current_list {
-                    item_list = update_items(&db, unwrapped_list)?;
-                }
-                else {
-                    println!("\tError Occured While Editing {}", list_name)
+                let list_id = prompt_usr("Enter List Id? ".to_string());
+                if let Ok(id_int) = list_id.parse::<i32>() {
+                    edit_list(&db, id_int)?;
+                    current_list = Some(get_list_info(&db, id_int)?);
+                    if let Some(ref unwrapped_list) = current_list {
+                        item_list = update_items(&db, unwrapped_list)?;
+                    }
                 }
             },
             "check_boxes" => {
-                let list_name = prompt_usr("Enter List Name? ".to_string());
-                // sqlite bools are 0 or 1, 1-1=0 true->false, |0-1|=|-1|=1 false->true
-                let _list_toggled = db.execute(
-                    "update List set check_boxes = abs(check_boxes - 1) where name like ?1",
-                    params![list_name]
-                )?;
-                if let Some(ref mut unwrapped_list) = current_list && unwrapped_list.name == list_name {
-                    unwrapped_list.check_boxes = !unwrapped_list.check_boxes;
+                let list_id = prompt_usr("Enter List Id? ".to_string());
+                if let Ok(id_int) = list_id.parse::<i32>() {
+                    toggle_list_boxes(&db, id_int)?;
+                    if let Some(ref mut unwrapped_list) = current_list && unwrapped_list.id == id_int {
+                        unwrapped_list.check_boxes = !unwrapped_list.check_boxes;
+                    }
                 }
             },
             "archive" => {
-                let list_name = prompt_usr("Enter List Name? ".to_string());
-                // sqlite bools are 0 or 1, 1-1=0 true->false, |0-1|=|-1|=1 false->true
-                let _list_toggled = db.execute(
-                    "update List set archived = abs(archived - 1) where name like ?1",
-                    params![list_name]
-                )?;
-                if let Some(ref mut unwrapped_list) = current_list && unwrapped_list.name == list_name {
-                    unwrapped_list.archived = !unwrapped_list.archived;
+                let list_id = prompt_usr("Enter List Id? ".to_string());
+                if let Ok(id_int) = list_id.parse::<i32>() {
+                    archive_list(&db, id_int)?;
+                    if let Some(ref mut unwrapped_list) = current_list && unwrapped_list.id == id_int {
+                        unwrapped_list.archived = !unwrapped_list.archived;
+                    }
                 }
             },
             "delete" => {
-                let list_name = prompt_usr("Enter List Name? ".to_string());
-                let _list_deleted = db.execute(
-                    "delete from List where name like ?1", 
-                    params![list_name]
-                )?;
-                if let Some(ref unwrapped_list) = current_list {
-                    if unwrapped_list.name == list_name {
+                let list_id = prompt_usr("Enter List Id? ".to_string());
+                if let Ok(id_int) = list_id.parse::<i32>() {
+                    delete_list(&db, id_int)?;
+                    if let Some(ref mut unwrapped_list) = current_list && unwrapped_list.id == id_int {
                         current_list = None;
                         item_list = None;
                     }
                 }
             },
             "print" => {
-                let stmt = db.prepare(
-                    "select l.id, l.name, l.check_boxes, archived, count(i.list_id) from List as l
-                            left join Item as i on l.id = i.list_id group by i.list_id"
-                );
-                if let Ok(mut prepared_stmt) = stmt {
-                    let lists = prepared_stmt.query_map([],
-                        |row| {
-                            //NOTE don't care about whether completion is hidden while printing here
-                            Ok(List { id: row.get(0)?, name: row.get(1)?, check_boxes: row.get(2)?, archived: row.get(3)?, hide_complete: false, item_count: row.get(4)?, })
-                        }
-                    );
-                    if let Ok(valid_lists) = lists {
-                        let mut has_lists = false;
-                        for list in valid_lists {
-                            has_lists = true;
-                            if let Ok(ref valid_list) = list {
-                                println!("\t{0}\tcompletion: {1}, archived: {2}, count: {3}", valid_list.name, valid_list.check_boxes, valid_list.archived, valid_list.item_count);
-                            }
-                        }
-                        if !has_lists { println!("\tNo Lists In File.."); }
-                    }
-                }
+                print_lists(&db)?;
             },
             "exit" => { println!("\tExiting.."); break 'list; },
             _ => println!("\tUnknown Command"),
@@ -388,17 +356,81 @@ fn initialize_db(db: &Connection) -> Result<(), rusqlite::Error> {
 }
 
 // query the db for a desired lists information (id, name, completion mode, and item count)
-fn get_list_info(list_name: String, db: &Connection) -> Result<List, rusqlite::Error> {
+fn get_list_info(db: &Connection, list_id: i32) -> Result<List, rusqlite::Error> {
     db.query_one(
         "select l.id, l.name, l.check_boxes, l.archived, l.hide_complete, count(i.list_id) from List as l
             left join Item as i on l.id = i.list_id
-            where name like ?1
+            where l.id like ?1
             group by i.list_id",
-        params![list_name],
+        params![list_id],
         |row| {
             Ok(List { id: row.get(0)?, name: row.get(1)?, check_boxes: row.get(2)?, archived: row.get(3)?, hide_complete: row.get(4)?, item_count: row.get(5)? })
         }
     )
+}
+
+fn add_list(db: &Connection, list_name: String, check_boxes: bool) -> Result<(), rusqlite::Error> {
+    let _list_inserted = db.execute(
+        "insert into List(name, check_boxes) values(?1,?2)", 
+        params![list_name, check_boxes]
+    )?;
+    Ok(())
+}
+
+fn edit_list(db: &Connection, list_id: i32) -> Result<(), rusqlite::Error> {
+    let _list_selected = db.query_one(
+        "select name from List where id like ?1",
+        params![list_id],
+        |row| row.get::<usize, String>(0)
+    )?;
+    Ok(())
+}
+
+fn toggle_list_boxes(db: &Connection, list_id: i32) -> Result<(), rusqlite::Error> {
+    // sqlite bools are 0 or 1, 1-1=0 true->false, |0-1|=|-1|=1 false->true
+    let _list_toggled = db.execute(
+        "update List set check_boxes = abs(check_boxes - 1) where id like ?1",
+        params![list_id]
+    )?;
+    Ok(())
+}
+
+fn archive_list(db: &Connection, list_id: i32) -> Result<(), rusqlite::Error> {
+    // sqlite bools are 0 or 1, 1-1=0 true->false, |0-1|=|-1|=1 false->true
+    let _list_toggled = db.execute(
+        "update List set archived = abs(archived - 1) where id like ?1",
+        params![list_id]
+    )?;
+    Ok(())
+}
+
+fn delete_list(db: &Connection, list_id: i32) -> Result<(), rusqlite::Error> {
+    let _list_deleted = db.execute(
+        "delete from List where id like ?1", 
+        params![list_id]
+    )?;
+    Ok(())
+}
+
+fn print_lists(db: &Connection) -> Result<(), rusqlite::Error> {
+    let mut stmt = db.prepare(
+        "select l.id, l.name, l.check_boxes, archived, hide_complete, count(i.list_id) from List as l
+                left join Item as i on l.id = i.list_id group by i.list_id order by l.id"
+    )?;
+    let lists = stmt.query_map([],
+        |row| {
+            Ok(List { id: row.get(0)?, name: row.get(1)?, check_boxes: row.get(2)?, archived: row.get(3)?, hide_complete: row.get(4)?, item_count: row.get(5)?, })
+        }
+    )?;
+    let mut has_lists = false;
+    for list in lists {
+        has_lists = true;
+        if let Ok(ref valid_list) = list {
+            println!("\t{0}  {1}\tcompletion: {2}, archived: {3}, count: {4}", valid_list.id, valid_list.name, valid_list.check_boxes, valid_list.archived, valid_list.item_count);
+        }
+    }
+    if !has_lists { println!("\tNo Lists In File.."); }
+    Ok(())
 }
 
 // execute transaction in db to update changed completion or schedule status, then rebuild the
