@@ -19,6 +19,7 @@ struct List {
 struct Item {
     id: i32,
     complete: bool,
+    highlight: bool,
     text: String,
     parent: Option<i32>,
     next: Option<i32>,
@@ -249,9 +250,10 @@ fn main() -> Result<()>{
                                             None
                                         }
                                     }
-                                    else { None }
+                                    else { Some(0) }
                                 };
                                 if let Some(ref mut item_list_unwrap) = item_list && let Some(unwrapped_period) = period {
+                                    println!("{}", time_start);
                                     recur_item(&mut db, pos_int, unwrapped_period, time_start, unwrapped_list.id, item_list_unwrap)?;
                                 }
                             }
@@ -301,6 +303,18 @@ fn main() -> Result<()>{
                         }
                         else { println!("\tError While Parsing Position as usize"); }
                     },
+                    "touch" => {
+                        let item_pos = prompt_usr("Enter Item Position? ".to_string());
+                        if let Ok(pos_int) = item_pos.parse::<usize>() {
+                            let item_list_len = item_list.clone().unwrap().len();
+                            if pos_int < item_list_len {
+                                if let Some(ref mut item_list_unwrap) = item_list {
+                                    touch_item(&mut db, pos_int, unwrapped_list.id, item_list_unwrap)?;
+                                }
+                            }
+                        }
+                        else { println!("\tError While Parsing Position as usize"); }
+                    },
                     "update" => {
                         item_list = update_items(&mut db, unwrapped_list)?;
                     },
@@ -343,6 +357,7 @@ fn initialize_db(db: &Connection) -> Result<(), rusqlite::Error> {
             create table if not exists Item(
               id INTEGER PRIMARY KEY AUTOINCREMENT,
               complete BOOLEAN NOT NULL DEFAULT(FALSE),
+              highlight BOOLEAN NOT NULL DEFAULT(FALSE),
               text TEXT NOT NULL,
               parent INTEGER,
               next INTEGER,
@@ -465,6 +480,13 @@ fn update_items(db: &Connection, list_info: &List) -> Result<Option<Vec<Item>>, 
             where l.id = i.list_id and 
               (unixepoch('now') - r.time_last > r.period 
               or unixepoch('now') > s.activation_date));
+        --highlight items that have a due recurrence/schedule
+        update Item as i
+          set highlight = 1
+          where exists (select * from Recurrence as r full outer join Schedule as s on r.id = s.id
+            where (i.id = r.id or i.id = s.id) and 
+              (unixepoch('now') - r.time_last > r.period 
+              or unixepoch('now') > s.activation_date));
         --update the completed status and the time last
         update Item
           set complete = FALSE
@@ -488,7 +510,7 @@ fn update_items(db: &Connection, list_info: &List) -> Result<Option<Vec<Item>>, 
 // query the db for items of a list and generate the ordered list of items
 fn build_ordered_items(db: &Connection, id: i32) -> Result<Option<Vec<Item>>, rusqlite::Error> {
     let stmt = db.prepare(
-        "select i.id, i.complete, i.text, i.parent, i.next, r.period, r.time_last, s.activation_date
+        "select i.id, i.complete, i.highlight, i.text, i.parent, i.next, r.period, r.time_last, s.activation_date
             from Item as i left join Recurrence as r on i.id = r.id
                 left join Schedule as s on i.id = s.id
             where list_id like ?1"
@@ -500,13 +522,13 @@ fn get_unsorted_items(mut stmt: rusqlite::Statement, list_id: i32) -> Result<Vec
     // map the queried rows to Item structs
     let items = stmt.query_map(params![list_id], |row| {
         let recurrence = {
-            if let Ok(period) = row.get(5) && let Ok(time_last) = row.get(6) {
+            if let Ok(period) = row.get(6) && let Ok(time_last) = row.get(7) {
                 Some(Recurrence { period, time_last })
             }
             else { None::<Recurrence> }
         };
-        Ok(Item { id: row.get(0)?, complete: row.get(1)?, text: row.get(2)?, parent: row.get::<usize, Option<i32>>(3)?,
-            next: row.get::<usize, Option<i32>>(4)?, recurrence, schedule_date: row.get::<usize, Option<i64>>(7)? })
+        Ok(Item { id: row.get(0)?, complete: row.get(1)?, highlight: row.get(2)?, text: row.get(3)?, parent: row.get::<usize, Option<i32>>(4)?,
+            next: row.get::<usize, Option<i32>>(5)?, recurrence, schedule_date: row.get::<usize, Option<i64>>(8)? })
     })?;
     // interate over the MappedRows and return them as a Vec
     let mut unsorted_list = vec![];
@@ -569,7 +591,7 @@ fn add_item(db: &mut Connection, position: usize, text: String, next_id: Option<
         }
     }?;
     // update memory list
-    item_list.insert(position, Item{ id: inserted_id, complete: false, text: text, parent: None, next: next_id, recurrence: None, schedule_date: None });
+    item_list.insert(position, Item { id: inserted_id, complete: false, highlight: false, text: text, parent: None, next: next_id, recurrence: None, schedule_date: None });
     if position > 0 {
         item_list[position-1].next = Some(inserted_id);
     }
@@ -756,7 +778,9 @@ fn recur_item(db: &mut Connection, position: usize, period: i64, start: String, 
         "update List set time_edited = unixepoch('now') where id like ?1",
         params![list_id]
     )?;
+    println!("{}", start);
     if start == "remove" {
+        println!("tet");
         let _recurrence_deleted = tx.execute(
             "delete from Recurrence where id like ?1",
             params![item_list[position].id]
@@ -816,6 +840,21 @@ fn schedule_item(db: &mut Connection, position: usize, start: String, list_id: i
         )?;
         item_list[position].schedule_date = Some(datetime.timestamp());
     }
+    tx.commit()?;
+    Ok(())
+}
+
+fn touch_item(db: &mut Connection, position: usize, list_id: i32, item_list: &mut Vec<Item>) -> Result<(), rusqlite::Error> {
+    let tx = db.transaction()?;
+    let _time_edited_updated = tx.execute(
+        "update List set time_edited = unixepoch('now') where id like ?1",
+        params![list_id]
+    )?;
+    let _item_updated = tx.execute(
+        "update Item set highlight = 0 where id like ?1",
+        params![item_list[position].id]
+    )?;
+    item_list[position].highlight = false;
     tx.commit()?;
     Ok(())
 }
@@ -953,6 +992,8 @@ fn print_item(item: &Item, index: usize) {
     print!("\t");
     if let Some(_) = item.parent { print!("  "); }
     //print!("{0}: {1:?}", index, item); // debug print
+    if item.highlight { print!("* "); }
+    else { print!("  "); }
     print!("{0: >2}: {1}", index, item.text);
     if let Some(ref recurrence) = item.recurrence && let Some(next_reoccurence) = DateTime::from_timestamp_secs(recurrence.time_last + recurrence.period) {
         print!("\t\tRecurring: {}", next_reoccurence.with_timezone(&Local));
