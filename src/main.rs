@@ -1,4 +1,5 @@
 use std::io::{self, Write};
+use std::env;
 use rusqlite::{Connection, Transaction, Result, params};
 use chrono::{DateTime, Local, TimeZone, NaiveDateTime};
 
@@ -37,7 +38,14 @@ struct Recurrence {
 }
 
 fn main() -> Result<()>{
-    let path = prompt_usr("Enter DB Path? ".to_string()) + ".db";
+    // get the db file from the command line arg
+    let path = {
+        let args: Vec<String> = env::args().collect();
+        if let Some(path) = args.get(1) {
+            path.clone()
+        }
+        else { "junebug_notes.db".to_string() }
+    };
     let mut db = Connection::open(path)?;
     initialize_db(&db)?;
     let mut current_list: Option<List> = None;
